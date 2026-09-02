@@ -448,6 +448,21 @@ async function run(opts: CliOptions): Promise<number> {
   const verdict = interpretWalk(walk.tags);
   const decision = decideApproval(verdict);
 
+  // A "no" nobody can read is a dead end for whoever has to act on it. The
+  // Action dumps every node's final output into its log; the CLI stays quiet on
+  // success — the summary below is enough — but when the answer is no it prints
+  // the deciding agent's own words, so the reason survives wherever this run is
+  // being tailed rather than dying with the process.
+  if (!decision.apply && !decision.noop) {
+    const blamed = walk.runs.filter(
+      (r) => r.configKey.includes("code-reviewer") || r.status === "failed",
+    );
+    for (const r of blamed.length ? blamed : walk.runs.slice(-1)) {
+      console.log(`\n──────── why: ${r.configKey} [${r.status}] ────────`);
+      console.log((r.output || "(the agent produced no output)").slice(0, 4000));
+    }
+  }
+
   // Release intent: validate the manifest's releaseIntent deterministically so
   // problems surface here, where a human can still fix them, instead of at
   // Beacon's fail-closed hold on deploy. Warning only — never fails the run.
