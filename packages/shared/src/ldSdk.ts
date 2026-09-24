@@ -46,6 +46,24 @@ async function observabilityPlugins(): Promise<NonNullable<LDOptions["plugins"]>
   }
 }
 
+/**
+ * The server SDK talks to LaunchDarkly's *SDK* endpoints, which are separate
+ * hosts from the REST API in LD_BASE_URL. Left at their defaults, a staging SDK
+ * key hits production and the client dies with
+ * "401 (invalid SDK key) for streaming request - giving up permanently",
+ * even though every REST call succeeded. So when LD_BASE_URL points at the
+ * staging instance, redirect the SDK too. Explicit env vars win, for any
+ * instance these three guesses would not cover.
+ */
+function resolveSdkEndpoints(): Pick<LDOptions, "streamUri" | "baseUri" | "eventsUri"> | undefined {
+  const staging = (process.env.LD_BASE_URL ?? "").includes("ld-stg.launchdarkly.com");
+  const streamUri = process.env.LD_STREAM_URI ?? (staging ? "https://stream-stg.launchdarkly.com" : undefined);
+  const baseUri = process.env.LD_SDK_BASE_URI ?? (staging ? "https://sdk-stg.launchdarkly.com" : undefined);
+  const eventsUri = process.env.LD_EVENTS_URI ?? (staging ? "https://events-stg.launchdarkly.com" : undefined);
+  if (!streamUri || !baseUri || !eventsUri) return undefined;
+  return { streamUri, baseUri, eventsUri };
+}
+
 export interface LdSdk {
   /** Server SDK client — flag evaluation. */
   ldClient: LDClient;
@@ -63,7 +81,11 @@ export async function getLdSdk(): Promise<LdSdk> {
   if (!sdkKey) {
     throw new Error("LD_SDK_KEY not set — the server SDK key for flag evaluation and AI config/graph resolution");
   }
-  const ldClient = init(sdkKey, { plugins: await observabilityPlugins() });
+  const endpoints = resolveSdkEndpoints();
+  const ldClient = init(sdkKey, {
+    plugins: await observabilityPlugins(),
+    ...(endpoints ?? {}),
+  });
   await ldClient.waitForInitialization({ timeout: 15 });
   const aiClient = initAi(ldClient);
   cached = { ldClient, aiClient };

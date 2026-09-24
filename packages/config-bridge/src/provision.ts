@@ -133,6 +133,13 @@ interface AiConfigFile {
   tags?: string[];
   /** Required by the API for mode "judge" (e.g. "$ld:ai:judge:<config-key>"). */
   evaluationMetricKey?: string;
+  /**
+   * Also required by the API for mode "judge": the success direction, which
+   * offline evaluations derive pass/fail from. false = a higher score is
+   * better. Without it, create fails 400 "isInverted is required for a custom
+   * judge".
+   */
+  isInverted?: boolean;
   variations?: AiVariation[];
   /** Per-provider serving rules (e.g. run.provider=openai → openai variation). */
   targeting?: CommittedTargeting;
@@ -332,6 +339,10 @@ async function provisionAiConfig(
       tags: cfg.tags ?? [],
       // Judge mode requires the evaluation metric key at creation time.
       ...(cfg.evaluationMetricKey ? { evaluationMetricKey: cfg.evaluationMetricKey } : {}),
+      // ...and the success direction. Default judge-mode configs to false (a
+      // higher score is better), which is what every judge here scores on, so
+      // existing definitions provision without each needing the field.
+      ...(cfg.mode === "judge" ? { isInverted: cfg.isInverted ?? false } : {}),
     };
     let defaultMapped: Record<string, unknown> | undefined;
     if (variations[0]) {
