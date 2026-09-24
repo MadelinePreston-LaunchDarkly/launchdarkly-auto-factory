@@ -74473,6 +74473,15 @@ async function observabilityPlugins() {
     return [];
   }
 }
+function resolveSdkEndpoints() {
+  const staging = (process.env.LD_BASE_URL ?? "").includes("ld-stg.launchdarkly.com");
+  const streamUri = process.env.LD_STREAM_URI ?? (staging ? "https://stream-stg.launchdarkly.com" : void 0);
+  const baseUri = process.env.LD_SDK_BASE_URI ?? (staging ? "https://sdk-stg.launchdarkly.com" : void 0);
+  const eventsUri = process.env.LD_EVENTS_URI ?? (staging ? "https://events-stg.launchdarkly.com" : void 0);
+  if (!streamUri || !baseUri || !eventsUri)
+    return void 0;
+  return { streamUri, baseUri, eventsUri };
+}
 var cached = null;
 async function getLdSdk() {
   if (cached)
@@ -74482,7 +74491,11 @@ async function getLdSdk() {
   if (!sdkKey) {
     throw new Error("LD_SDK_KEY not set \u2014 the server SDK key for flag evaluation and AI config/graph resolution");
   }
-  const ldClient = (0, import_node_server_sdk.init)(sdkKey, { plugins: await observabilityPlugins() });
+  const endpoints = resolveSdkEndpoints();
+  const ldClient = (0, import_node_server_sdk.init)(sdkKey, {
+    plugins: await observabilityPlugins(),
+    ...endpoints ?? {}
+  });
   await ldClient.waitForInitialization({ timeout: 15 });
   const aiClient = initAi(ldClient);
   cached = { ldClient, aiClient };
