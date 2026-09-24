@@ -62,7 +62,6 @@ const POLL_MS = 250;
 const FIXTURES = [
   { id: "approved", file: "replay.ndjson", label: "Sample: full run approved" },
   { id: "gate", file: "replay-gate.ndjson", label: "Sample: held at approval gate" },
-  { id: "live-capture", file: "replay-live.ndjson", label: "Sample: last live run" },
 ];
 
 /** Parsed events, newest last. The whole history is replayed to each new client. */

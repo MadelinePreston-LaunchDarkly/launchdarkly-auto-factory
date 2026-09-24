@@ -131,7 +131,7 @@ four the workflow needs are set, and the Action path is proven (see below).
 |---|---|---|
 | `LD_APP_PROJECT_KEY` | variable | `word-golf`, the group's project, untouched |
 | `ANTHROPIC_API_KEY` | secret | set from `LD/.env`; swap for your team key on the day |
-| `LD_SDK_KEY` | secret | set to the **lab** factory project's key. Overwrite with the group's factory key once they bootstrap |
+| `LD_SDK_KEY` | secret | `word-golf-factory` server SDK key |
 | `LD_API_KEY` | secret | the staging writer token |
 | `CURSOR_API_KEY` | secret | not set, and not needed: the provider flag is pinned to `anthropic` |
 
@@ -195,25 +195,26 @@ another SE's cohort. Production `app.launchdarkly.com` was never touched.
 - **Not yet run:** `turnkey_sdk.py` end to end against these configs, and
   `optimization.py`.
 
-## The sampleRunLab: a working factory, proven end to end
+## The factory, proven end to end
 
-Built to rehearse the session solo, so the group's `word-golf` project and
-`qbr-2026-workshop` branch stay pristine. Separate projects, separate branches,
-nothing shared with the group artifacts.
+Originally rehearsed in a throwaway pair of projects (`samplerunlab-*`, since
+deleted). The group runs on `word-golf`, so the factory was rebuilt there and
+the rehearsal projects removed.
 
 | Piece | Where |
 |---|---|
-| Factory project | `samplerunlab-factory` on staging |
-| App project | `samplerunlab-app` on staging |
+| Factory project | `word-golf-factory` on staging |
+| App project | `word-golf` on staging |
 | Tool clone | `LD/QBR2026/launchdarkly-auto-factory` |
 | App worktree | `LD/QBR2026/wordgolf-lab`, branches `lab/sample-run` and `lab/gate-demo` |
 
-Provisioned by `npm run init --yes --provider anthropic --base-url
+Provisioned by `npm run init --yes --provider anthropic --factory-project
+word-golf-factory --app-project word-golf --base-url
 https://ld-stg.launchdarkly.com --front-end none --no-pr`, deliberately using
 the **writer** token rather than the admin one, so the credential the group will
 use is proven to create projects, configs, judges, graphs, tools and metrics.
 
-`samplerunlab-factory` holds 7 agent configs, 2 judges, the `gha-auto-factory`
+`word-golf-factory` holds 7 agent configs, 2 judges, the `gha-auto-factory`
 graph, 20 tools and the 5 `auto-factory-*` operational flags. `npm run doctor`
 reports `✓ No problems.`
 
@@ -378,11 +379,10 @@ completed, judges 0.88 and 0.62, `risk_level=low`, flag `show-moves-left` plus
 three metrics.
 
 **It wrote to the lab, not to the group's project.** Verified after the run:
-`samplerunlab-app` holds the three lab flags, and `word-golf` is still empty at
-0 flags and 0 metrics. That is because the test branch pins
-`LD_APP_PROJECT_KEY: samplerunlab-app` in **its own copy** of the workflow,
-leaving the repo variable (`word-golf`) untouched for the group. Do not merge
-that branch into `qbr-2026-workshop`.
+the run created its flag in the lab project rather than `word-golf`, because
+the test branch pinned `LD_APP_PROJECT_KEY` in its own copy of the workflow.
+That branch and its PR are now closed and deleted: the group runs on `word-golf`
+directly, and the repo variable already says so.
 
 ### Repo config now set
 
@@ -390,12 +390,11 @@ that branch into `qbr-2026-workshop`.
 |---|---|---|
 | `LD_APP_PROJECT_KEY` | variable | `word-golf` (the group's, unchanged) |
 | `ANTHROPIC_API_KEY` | secret | set |
-| `LD_SDK_KEY` | secret | `samplerunlab-factory` server SDK key |
+| `LD_SDK_KEY` | secret | `word-golf-factory` server SDK key |
 | `LD_API_KEY` | secret | the staging writer token |
 
-`LD_SDK_KEY` currently points at the **lab** factory project, because the
-group's factory project does not exist until they run the bootstrap. When they
-do, overwrite this secret with their factory key. That is the one handoff step.
+`LD_SDK_KEY` points at `word-golf-factory`, the one shared factory. Nothing is
+left to repoint.
 
 `CURSOR_API_KEY` is still unset and does not need to be: the provider flag is
 pinned to `anthropic`.

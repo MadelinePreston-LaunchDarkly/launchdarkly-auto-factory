@@ -428,6 +428,36 @@ kill it.
 
 ---
 
+## 15. Our own tooling: three guards added after two near-misses (internal)
+
+**Repo:** this one, `factory-ui/round.sh` · **Found:** 2026-09-24
+
+Not a finding about the AutoFactory. Recorded because two of these are easy to
+repeat in any wrapper around the CLI, and one of them nearly wrote agent edits
+into the branch a whole group shares.
+
+**A git worktree's `.git` is a file, not a directory.** The app-repo autodetect
+used `[ -d "$c/.git" ]`, which silently skipped the lab worktree and fell
+through to the next candidate: the group's shared checkout. A run started
+against `qbr-2026-workshop` before it was killed. The test has to be
+`git -C "$c" rev-parse --git-dir`, which is true for both a clone and a
+worktree.
+
+**A bare flag flip should not start work.** `./round.sh --no-gate` reads as
+"turn the gate off", but it flipped the flag and then ran a whole round. Flipping
+with no other action flag now flips and stops; `--gate --run` makes
+flip-then-run explicit.
+
+**Refuse to run the chain on a shared branch.** The chain writes edits into the
+working tree, so doing that on `qbr-2026-workshop`, `main` or `master` is never
+intended. It now exits 2 with the `--fresh` command instead.
+
+Worth generalising: any front end that edits a working tree should know which
+branch it is on and refuse the shared ones, because the failure is silent until
+someone else pulls.
+
+---
+
 ## Template for new entries
 
 ```

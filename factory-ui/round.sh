@@ -24,7 +24,10 @@ UI="$TOOL/factory-ui"
 LAB="${AF_APP_ROOT:-}"
 if [ -z "$LAB" ]; then
   for c in "$TOOL/../wordgolf-lab" "$TOOL/../WordGolfAutofactory"; do
-    [ -d "$c/.git" ] && LAB="$(cd "$c" && pwd)" && break
+    # NOT `[ -d "$c/.git" ]`: a git WORKTREE has .git as a file, so that test
+    # silently skips it and falls through to the next candidate, which is how a
+    # run once targeted the shared group checkout instead of the lab worktree.
+    [ -e "$c/.git" ] && git -C "$c" rev-parse --git-dir >/dev/null 2>&1 && LAB="$(cd "$c" && pwd)" && break
   done
 fi
 # One feed file per branch. Several cohorts share one factory, and the UI treats
@@ -34,6 +37,7 @@ FEEDDIR="$UI/feeds"
 BASE="lab/sample-run"
 FRESH=""
 GATE=""
+RUN_AFTER_FLIP=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -41,6 +45,7 @@ while [ $# -gt 0 ]; do
     --base)  BASE="${2:-}";  [ -n "$BASE" ]  || { echo "--base needs a ref";  exit 2; }; shift 2 ;;
     --gate)    GATE="always"; shift ;;
     --no-gate) GATE="off";    shift ;;
+    --run)     RUN_AFTER_FLIP=1; shift ;;
     -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1"; exit 2 ;;
   esac
@@ -81,6 +86,13 @@ if [ -n "$GATE" ]; then
   fi
 fi
 
+# `./round.sh --no-gate` reads as "turn the gate off", not "turn it off and
+# start a round". Flipping with no other action flag flips and stops.
+if [ -n "$GATE" ] && [ -z "$FRESH" ] && [ -z "$RUN_AFTER_FLIP" ]; then
+  echo "Gate flipped. Start a round with: ./round.sh --fresh <name>"
+  exit 0
+fi
+
 if [ -n "$FRESH" ]; then
   # --porcelain, not `git diff`: the factory leaves UNTRACKED files (the release
   # manifest), and those are invisible to git diff but still ride along across a
@@ -99,6 +111,14 @@ if [ -n "$FRESH" ]; then
 fi
 
 BRANCH=$(git -C "$LAB" rev-parse --abbrev-ref HEAD)
+# The chain writes edits into the working tree. Doing that on the branch the
+# whole group shares is never what anyone wants.
+case "$BRANCH" in
+  qbr-2026-workshop|main|master)
+    echo "refusing to run against '$BRANCH': the chain edits the working tree, and"
+    echo "that branch is shared. Start a round with: ./round.sh --fresh <name>"
+    exit 2 ;;
+esac
 # lab/my-change -> feeds/lab-my-change.ndjson
 mkdir -p "$FEEDDIR"
 FEED="${AF_FEED:-$FEEDDIR/$(printf '%s' "$BRANCH" | tr '/' '-').ndjson}"
