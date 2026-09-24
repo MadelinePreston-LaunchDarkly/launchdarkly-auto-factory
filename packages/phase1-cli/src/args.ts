@@ -3,6 +3,7 @@
  * env in, options out) so it's unit-testable without a process.
  *
  *   autofactory run [--graph <key>] [--approve <nodeKey>]... [--dry-run]
+ *                   [--events <path>]
  *                   [--base <ref>] [--root <dir>]
  *   autofactory intake --issue <n> [--repo <owner/name>] [--graph <key>]
  *                   [--node <configKey>] [--base <ref>] [--root <dir>]
@@ -47,6 +48,8 @@ export interface CliOptions {
   dryRun: boolean;
   /** Gated node keys a human has approved (see EXIT.PENDING_APPROVAL). */
   approve: string[];
+  /** Write an NDJSON event feed here for a live observer (see eventLog.ts). */
+  events?: string;
 }
 
 /** Options for `autofactory intake` (the issue entry point). */
@@ -96,6 +99,7 @@ export function usage(): string {
     "  --graph <key>       Agent graph to walk (default: $GRAPH_KEY or gha-auto-factory)",
     "  --approve <node>    Approve a gated step; repeat per step (see exit code 3)",
     "  --dry-run           Read-only: no flags/metrics created, no files edited",
+    "  --events <path>     Also write an NDJSON event feed for a live observer",
     "  --base <ref>        Base ref to diff against (default: $PR_BASE_REF or main)",
     "  --root <dir>        Repo to operate on (default: current directory)",
     "  -h, --help          Show this help",
@@ -173,6 +177,12 @@ export function parseArgs(argv: string[], env: Record<string, string | undefined
         const v = next();
         if (!v) return { error: "--root requires a directory" };
         options.root = v;
+        break;
+      }
+      case "--events": {
+        const v = next();
+        if (!v) return { error: "--events requires a file path" };
+        options.events = v;
         break;
       }
       case "--dry-run":

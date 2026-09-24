@@ -17,6 +17,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { type EventLog, openEventLog } from "./eventLog.js";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -114,6 +115,53 @@ async function buildWriter(dryRun: boolean, root: string): Promise<LdResourceWri
  * three levels up and compare against the `[cfg:…]` stamp that
  * provision/upgrade write onto the live graph's description. Best-effort.
  */
+/**
+ * The chain a graph *plans* to walk, read from the committed graph definition:
+ * follow `edges` from `rootConfigKey` one hop at a time.
+ *
+ * This is the plan, not the outcome. The executed path depends on runtime tag
+ * routing (`require_tags` / `skip_if_tags`), so a node listed here can be
+ * skipped — the UI renders these as a pending skeleton and lets real
+ * node-start/node-complete events overwrite it. Returns undefined rather than
+ * a partial guess if the file is unreadable.
+ */
+function plannedChain(): { key: string; title: string; conditional: boolean; intake: boolean }[] | undefined {
+  try {
+    const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+    const raw = JSON.parse(readFileSync(join(repoRoot, "config", "agentcontrol", "graphs", "auto-factory.json"), "utf8")) as {
+      rootConfigKey?: string;
+      edges?: { sourceConfig?: string; targetConfig?: string; handoff?: Record<string, unknown> }[];
+    };
+    if (!raw.rootConfigKey || !Array.isArray(raw.edges)) return undefined;
+    // Titles come from the same NODE_TITLES map the console lines use, so the
+    // UI's pending skeleton is labelled identically to the real events.
+    const out: { key: string; title: string; conditional: boolean; intake: boolean }[] = [
+      { key: raw.rootConfigKey, title: NODE_TITLES[raw.rootConfigKey] ?? raw.rootConfigKey, conditional: false, intake: true },
+    ];
+    const seen = new Set<string>([raw.rootConfigKey]);
+    let cursor = raw.rootConfigKey;
+    // Linear walk: this graph is a chain, so each node has at most one outgoing
+    // edge. `seen` guards against a cycle turning this into an infinite loop.
+    for (;;) {
+      const edge = raw.edges.find((e) => e.sourceConfig === cursor);
+      const target = edge?.targetConfig;
+      if (!target || seen.has(target)) break;
+      const h = edge?.handoff ?? {};
+      out.push({
+        key: target,
+        title: NODE_TITLES[target] ?? target,
+        conditional: "require_tags" in h || "skip_if_tags" in h,
+        intake: false,
+      });
+      seen.add(target);
+      cursor = target;
+    }
+    return out.length > 1 ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function detectConfigDrift(graphKey: string): Promise<string | undefined> {
   try {
     const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -169,21 +217,28 @@ export function describeStall(stall: StallInfo): string {
 export class UsageError extends Error {}
 
 export async function runCli(opts: CliOptions): Promise<number> {
+  // Optional NDJSON feed for a live observer (the pipeline UI). No-op without
+  // --events. Opened here, not in run(), so a crash still reaches the feed:
+  // otherwise the UI would sit on the last node forever with no way to know the
+  // process died.
+  const feed = openEventLog(opts.events);
   try {
-    return await run(opts);
+    return await run(opts, feed);
   } catch (e) {
     if (e instanceof UsageError) {
       console.error(`autofactory: ${e.message}`);
+      feed.emit({ type: "run-end", outcome: "usage-error", exitCode: EXIT.USAGE, error: e.message });
       return EXIT.USAGE;
     }
     console.error(e instanceof Error ? (e.stack ?? e.message) : String(e));
+    feed.emit({ type: "run-end", outcome: "error", exitCode: EXIT.FAILED, error: e instanceof Error ? e.message : String(e) });
     return EXIT.FAILED;
   } finally {
     await closeLdSdk();
   }
 }
 
-async function run(opts: CliOptions): Promise<number> {
+async function run(opts: CliOptions, feed: EventLog): Promise<number> {
   // .env is read from the INVOKING directory (where the partner keeps the five
   // secrets), not from --root — the app repo under work needs no secrets.
   loadDotEnv();
@@ -256,6 +311,21 @@ async function run(opts: CliOptions): Promise<number> {
     `Phase 1: ${context.REPO ?? root} @ ${state.branch ?? "(detached)"} vs ${state.resolvedBase ?? opts.base} ` +
       `(${state.aheadOfBase} commit(s) ahead, ${state.dirtyFiles} dirty file(s)) → graph '${opts.graphKey}' [provider: ${provider}]`,
   );
+
+  feed.emit({
+    type: "run-start",
+    repo: context.REPO ?? root,
+    branch: state.branch ?? null,
+    base: state.resolvedBase ?? opts.base,
+    aheadOfBase: state.aheadOfBase,
+    dirtyFiles: state.dirtyFiles,
+    graph: opts.graphKey,
+    provider,
+    dryRun: opts.dryRun,
+    appProject: process.env.LD_APP_PROJECT_KEY ?? null,
+    factoryProject: process.env.LD_PROJECT_KEY ?? null,
+    plannedChain: plannedChain() ?? null,
+  });
 
   const configDrift = await detectConfigDrift(opts.graphKey);
   if (configDrift) console.log(`⚠ ${configDrift}`);
@@ -383,6 +453,30 @@ async function run(opts: CliOptions): Promise<number> {
     context,
     graphTracker,
     (event) => {
+      // Mirror every walk event onto the NDJSON feed before logging it, so a
+      // live observer sees the same sequence the console does.
+      if (event.type === "node-start") feed.emit({ type: "node-start", node: event.configKey, title: nodeTitle(event.configKey), index: event.index });
+      else if (event.type === "node-complete")
+        feed.emit({
+          type: "node-complete",
+          node: event.run.configKey,
+          title: nodeTitle(event.run.configKey),
+          index: event.index,
+          status: event.run.status,
+          tags: event.run.tags,
+        });
+      else if (event.type === "node-verified")
+        feed.emit({
+          type: "node-verified",
+          node: event.verification.node,
+          ok: event.verification.ok,
+          passed: event.verification.passed.map((c) => c.name),
+          failures: event.verification.failures.map((c) => ({ name: c.name, detail: c.detail })),
+        });
+      else if (event.type === "stalled") feed.emit({ type: "stalled", node: event.stall.node, detail: describeStall(event.stall) });
+      else if (event.type === "awaiting-approval") feed.emit({ type: "awaiting-approval", node: event.node });
+      else if (event.type === "awaiting-input") feed.emit({ type: "awaiting-input", node: event.node, question: event.question ?? null });
+
       if (event.type === "node-start") console.log(`\n▶ step ${event.index + 1}: ${nodeTitle(event.configKey)}`);
       else if (event.type === "node-complete") {
         console.log(
@@ -422,6 +516,14 @@ async function run(opts: CliOptions): Promise<number> {
         `  autofactory run --graph ${opts.graphKey}${opts.dryRun ? " --dry-run" : ""} ${approveFlags}`,
       ].join("\n"),
     );
+    feed.emit({
+      type: "run-end",
+      outcome: "pending-approval",
+      exitCode: EXIT.PENDING_APPROVAL,
+      gatedNode: node,
+      ranNodes: walk.runs.map((r) => r.configKey),
+      resumeCommand: `autofactory run --graph ${opts.graphKey}${opts.dryRun ? " --dry-run" : ""} ${approveFlags}`,
+    });
     return EXIT.PENDING_APPROVAL;
   }
 
@@ -483,6 +585,21 @@ async function run(opts: CliOptions): Promise<number> {
 
   // Final summary: what was created, where it lives, and the reviewer's verdict
   // as the standard fenced JSON block every front end ends with.
+  feed.emit({
+    type: "run-end",
+    outcome: decision.noop ? "noop" : decision.apply ? "approved" : "rejected",
+    verdict: decision.reason,
+    reviewApproved: verdict.hasVerdict ? verdict.reviewApproved : null,
+    flagKey: walk.tags.flag_key ?? null,
+    flagUrl: walk.tags.flag_key ? flagUrl(appProjectKey as string, walk.tags.flag_key) : null,
+    metricKeys: (walk.tags.metric_keys ?? "").split(",").map((k) => k.trim()).filter(Boolean),
+    manifest: manifestRel && manifestExists ? manifestRel : null,
+    judges: [...judgeScores].map(([node, score]) => ({ node, score })),
+    ranNodes: walk.runs.map((r) => r.configKey),
+    stalled: walk.stalledAt ? describeStall(walk.stalledAt) : null,
+    verificationFailed: walk.verificationFailed ? walk.verificationFailed.node : null,
+  });
+
   const lines: string[] = ["", "──────── AutoFactory Phase 1 — summary ────────", `Verdict: ${decision.reason}`];
   if (walk.tags.flag_key) {
     lines.push(`Flag: ${walk.tags.flag_key} → ${flagUrl(appProjectKey as string, walk.tags.flag_key)}`);
