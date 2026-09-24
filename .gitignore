@@ -16,8 +16,11 @@ sources/repos/
 .autofactory-rendered/
 
 # --- Secrets ---
+# Any .env variant, not just .env and .env.local: join.sh writes .env.bak when
+# it backs up an existing file, and that backup holds live credentials.
 .env
-.env.local
+.env.*
+!.env.example
 *.local
 
 # --- Dependencies / build output ---
@@ -66,3 +69,12 @@ PLAN-structured-intent.md
 
 # Design plans in progress (local-only until they graduate to ADRs)
 docs/plans/
+
+# Live pipeline UI: per-branch working feeds a round writes. The captured
+# replay*.ndjson samples are committed; these are transient.
+factory-ui/feeds/
+factory-ui/live.ndjson
+factory-ui/events.ndjson
+# Credential handouts staged for manual delivery.
+*.local.md
+*.local.txt

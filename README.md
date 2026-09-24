@@ -38,6 +38,12 @@ The agent-side path lives in a **`sentry` variation** of the Metrics Author AI c
 LaunchDarkly targeting selects it; the `default` variation is unchanged from the
 non-Sentry factory. Runtime pieces key off `SENTRY_*` env and soft-disable without it.
 
+**Watching a run:** `factory-ui/` is a zero-dependency live view of a Phase 1
+run (the six steps, each agent's output tags, and the flag and metrics appearing
+in LaunchDarkly), fed by the CLI's `--events` NDJSON feed. See
+[factory-ui/README.md](factory-ui/README.md). To set up against a factory that
+already exists rather than bootstrapping one, see [JOIN.md](JOIN.md).
+
 Node-by-node detail with the exact mechanics: [docs/pipeline-overview.html](docs/pipeline-overview.html).
 Design history: [docs/adr/](docs/adr/).
 

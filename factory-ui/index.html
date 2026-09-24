@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AutoFactory Phase 1 · live</title>
+<style>
+  /* Status palette is fixed and reserved: good / warning / serious / critical.
+     Every status colour is paired with an icon AND a word, so state is never
+     carried by colour alone. Dark is the default here because this is built to
+     be shown on a projector; the toggle wins over the OS setting either way. */
+  :root {
+    --surface-0: #f2f2ef;
+    --surface-1: #fcfcfb;
+    --surface-2: #e9e9e4;
+    --border:    #d6d6cf;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #86857f;
+    /* Reserved status roles, from the fixed status palette. `serious` is
+       deliberately omitted: nothing here means "serious", and it sits too
+       close to `warning` to risk both on one screen. */
+    --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+    --accent: #2a78d6;
+    --radius: 10px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+  :root[data-theme="dark"] {
+    --surface-0: #121211;
+    --surface-1: #1a1a19;
+    --surface-2: #242422;
+    --border:    #35352f;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #8b8a80;
+    --accent: #3987e5;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:where(:not([data-theme])) {
+      --surface-0: #f2f2ef; --surface-1: #fcfcfb; --surface-2: #e9e9e4; --border: #d6d6cf;
+      --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #86857f; --accent: #2a78d6;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--surface-0); color: var(--text-primary);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 22px 20px 56px; }
+
+  header { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
+  h1 { font-size: 19px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--text-secondary); font-size: 13px; font-family: var(--mono); overflow-wrap: anywhere; }
+  .spacer { flex: 1; }
+
+  /* Connection pill: also icon + word, not a bare colour. */
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+    padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    background: var(--surface-2); color: var(--text-secondary); border: 1px solid var(--border);
+  }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pill.live { color: var(--good); }
+  .pill.live .dot { animation: pulse 1.8s ease-in-out infinite; }
+  .pill.down { color: var(--critical); }
+  button.ghost {
+    background: var(--surface-2); color: var(--text-secondary); border: 1px solid var(--border);
+    border-radius: 999px; padding: 4px 11px; font-size: 12px; cursor: pointer; flex-shrink: 0;
+  }
+  button.ghost:hover:not(:disabled) { color: var(--text-primary); }
+  button.ghost:disabled { opacity: .45; cursor: default; }
+  select.ghost { font: inherit; font-size: 12px; padding: 4px 8px; }
+
+  /* ---- stat tiles: a number that needs no chart ---- */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 20px; }
+  .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
+  .tile .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); font-weight: 600; }
+  .tile .value { font-size: 26px; font-weight: 650; margin-top: 3px; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .tile .value small { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
+
+  /* ---- the rail: one segment per planned step ---- */
+  .rail { display: flex; gap: 4px; margin-bottom: 20px; }
+  .rail .seg { flex: 1; height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; position: relative; }
+  .rail .seg.done { background: var(--good); }
+  .rail .seg.running { background: var(--accent); }
+  .rail .seg.running::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,.65), transparent);
+    animation: sweep 1.4s linear infinite;
+  }
+  .rail .seg.halted { background: var(--warning); }
+  .rail .seg.failed { background: var(--critical); }
+  .rail .seg.skipped { background: var(--surface-2); opacity: .5; }
+
+  /* ---- node cards ---- */
+  .steps { display: flex; flex-direction: column; gap: 8px; }
+  .step {
+    display: grid; grid-template-columns: 30px 1fr auto; gap: 12px; align-items: start;
+    background: var(--surface-1); border: 1px solid var(--border); border-left: 3px solid var(--border);
+    border-radius: var(--radius); padding: 12px 14px;
+    transition: border-color .25s, background .25s, transform .25s, opacity .25s;
+  }
+  .step.pending { opacity: .5; }
+  .step.running { border-left-color: var(--accent); background: var(--surface-2); }
+  .step.done    { border-left-color: var(--good); }
+  .step.failed  { border-left-color: var(--critical); }
+  .step.halted  { border-left-color: var(--warning); }
+  .step.skipped { opacity: .38; }
+
+  .idx {
+    width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+    font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+    background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border);
+  }
+  .step.running .idx { background: var(--accent); color: #fff; border-color: transparent; animation: pulse 1.6s ease-in-out infinite; }
+  .step.done .idx    { background: var(--good); color: #fff; border-color: transparent; }
+  .step.failed .idx  { background: var(--critical); color: #fff; border-color: transparent; }
+  .step.halted .idx  { background: var(--warning); color: #221a00; border-color: transparent; }
+
+  .title { font-weight: 600; }
+  .key { font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); margin-top: 1px; }
+
+  /* The status WORD stays in an ink token so it is always readable; the icon
+     beside it carries the status colour. Warning yellow is only 1.79:1 on the
+     light surface, so colouring the label with it would make the one state a
+     human most needs to read the hardest to read. */
+  .state { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; white-space: nowrap; color: var(--text-secondary); }
+  .state .ico { font-size: 13px; line-height: 1; }
+  .state.running .ico { color: var(--accent); }
+  .state.done .ico    { color: var(--good); }
+  .state.failed .ico  { color: var(--critical); }
+  .state.halted .ico  { color: var(--warning); }
+  .state.pending .ico, .state.skipped .ico { color: var(--text-muted); }
+  .state.pending, .state.skipped { color: var(--text-muted); }
+
+  .tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+  .tag {
+    font-family: var(--mono); font-size: 11px; padding: 2px 7px; border-radius: 5px;
+    background: var(--surface-2); color: var(--text-secondary); border: 1px solid var(--border);
+    animation: land .3s ease-out;
+  }
+  .tag b { color: var(--text-primary); font-weight: 650; }
+  .checks { margin-top: 7px; font-size: 11.5px; color: var(--text-secondary); }
+
+  .note {
+    margin-top: 8px; padding: 9px 11px; border-radius: 7px; font-size: 12.5px;
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--text-secondary);
+  }
+  .note.warn { border-color: var(--warning); }
+  .note code { font-family: var(--mono); font-size: 11.5px; color: var(--text-primary); }
+
+  /* ---- results ---- */
+  section.result { margin-top: 22px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); margin: 0 0 9px; }
+  .res-list { display: flex; flex-direction: column; gap: 6px; }
+  .res {
+    display: flex; align-items: center; gap: 9px; padding: 9px 12px; font-size: 13px;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+  }
+  .res .kind {
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+    padding: 2px 6px; border-radius: 4px; background: var(--surface-2);
+    color: var(--text-secondary); border: 1px solid var(--border); flex-shrink: 0;
+  }
+  .res span.name { font-family: var(--mono); font-size: 12.5px; color: var(--text-primary); }
+  /* The flag deep-links into LaunchDarkly. Underlined so it is visibly
+     clickable: styled identically to the plain rows it would read as text. */
+  .res a { font-family: var(--mono); font-size: 12.5px; color: var(--text-primary);
+           text-decoration: underline; text-decoration-color: var(--accent);
+           text-underline-offset: 3px; text-decoration-thickness: 1.5px; }
+  .res a:hover { color: var(--accent); }
+  .empty { color: var(--text-muted); font-size: 13px; font-style: italic; }
+
+  .verdict {
+    display: flex; align-items: center; gap: 10px; padding: 13px 15px; border-radius: var(--radius);
+    background: var(--surface-1); border: 1px solid var(--border); border-left: 3px solid var(--border);
+    font-weight: 600; animation: land .4s cubic-bezier(.2,.8,.3,1);
+  }
+  .verdict.approved { border-left-color: var(--good); }
+  .verdict.rejected { border-left-color: var(--critical); }
+  .verdict.halted   { border-left-color: var(--warning); }
+  .verdict.noop     { border-left-color: var(--text-muted); }
+  .verdict .ico { font-size: 17px; }
+  .verdict.approved .ico { color: var(--good); }
+  .verdict.rejected .ico { color: var(--critical); }
+  .verdict.halted .ico   { color: var(--warning); }
+  .verdict.noop .ico     { color: var(--text-muted); }
+  .verdict .why { font-weight: 400; color: var(--text-secondary); font-size: 13px; }
+
+  /* Runbook: shut by default so it never covers the demo, and legible when open. */
+  .runbook { margin-top: 26px; border-top: 1px solid var(--border); padding-top: 12px; }
+  .runbook summary {
+    cursor: pointer; font-size: 12px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--text-muted); list-style: none;
+  }
+  .runbook summary::marker, .runbook summary::-webkit-details-marker { display: none; }
+  .runbook summary::before { content: "▸ "; }
+  .runbook[open] summary::before { content: "▾ "; }
+  .runbook summary:hover { color: var(--text-primary); }
+  .runbook-body { margin-top: 12px; font-size: 13.5px; color: var(--text-secondary); max-width: 74ch; }
+  .runbook-body p { margin: 0 0 11px; }
+  .runbook-body b { color: var(--text-primary); font-weight: 650; }
+  .runbook-body ol { margin: 0 0 13px; padding-left: 20px; }
+  .runbook-body li { margin-bottom: 9px; }
+  .runbook-body li span { display: block; margin-bottom: 4px; }
+  .runbook-body code {
+    font-family: var(--mono); font-size: 12px; background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px;
+    color: var(--text-primary); display: inline-block;
+  }
+  .runbook-note { font-size: 12.5px; color: var(--text-muted); }
+
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+  @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+  @keyframes land  { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+  /* Motion is decoration here; state is always in text too. */
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>AutoFactory Phase 1</h1>
+      <div class="sub" id="ctx">waiting for a run…</div>
+    </div>
+    <div class="spacer"></div>
+    <span class="pill" id="conn"><span class="dot"></span><span id="connText">connecting</span></span>
+    <select class="ghost" id="mode" aria-label="Data source"></select>
+    <button class="ghost" id="repeat" type="button" title="Replay this round from the start">↻ Repeat</button>
+    <button class="ghost" id="theme" type="button">Light</button>
+  </header>
+
+  <div class="tiles">
+    <div class="tile"><div class="label">Elapsed</div><div class="value" id="tElapsed">–</div></div>
+    <div class="tile"><div class="label">Steps</div><div class="value" id="tSteps">–</div></div>
+    <div class="tile"><div class="label">Flags created</div><div class="value" id="tFlags">–</div></div>
+    <div class="tile"><div class="label">Metrics created</div><div class="value" id="tMetrics">–</div></div>
+    <div class="tile"><div class="label">Provider</div><div class="value" id="tProvider">–</div></div>
+  </div>
+
+  <div class="rail" id="rail"></div>
+  <div class="steps" id="steps"></div>
+
+  <section class="result">
+    <h2>Created in LaunchDarkly</h2>
+    <div class="res-list" id="created"><div class="empty">Nothing yet. The chain creates the flag at step 3 and metrics at step 4.</div></div>
+  </section>
+
+  <section class="result" id="judgeWrap" hidden>
+    <h2>Judge scores <span style="text-transform:none;letter-spacing:0">(sampled evaluation, not a gate)</span></h2>
+    <div class="res-list" id="judges"></div>
+  </section>
+
+  <section class="result" id="verdictWrap" hidden>
+    <h2>Verdict</h2>
+    <div id="verdict"></div>
+  </section>
+
+  <details class="runbook" id="runbook">
+    <summary>Run another round</summary>
+    <div class="runbook-body">
+      <p>
+        A <b>round</b> is one pass of the six agents over one change. Repeating a
+        round needs a <b>new change</b>, not a re-run: the chain diffs your branch
+        against its base, so running twice on the same branch just reprocesses the
+        same diff. <code>round.sh</code> refuses that rather than showing you a
+        confusing no-op.
+      </p>
+      <ol>
+        <li>
+          <span>Start a branch. This stops so you can edit.</span>
+          <code>cd factory-ui &amp;&amp; ./round.sh --fresh my-change</code>
+        </li>
+        <li>
+          <span>Make <b>one</b> small change in <code>wordgolf-lab/word-golf</code>
+          and commit it. <b>Do not add a flag</b>: that is the pipeline's job, and a
+          pre-flagged change defeats the exercise.</span>
+        </li>
+        <li>
+          <span>Run the chain. Switch the source above to <b>Live run</b> to watch.</span>
+          <code>./round.sh</code>
+        </li>
+      </ol>
+      <p class="runbook-note">
+        Usually 10 to 15 minutes. It can exceed 45 if a model call times out and
+        retries, and nothing on this screen will say so, so do not kill a run that
+        looks stuck on one step.
+      </p>
+      <p>
+        <b>Show the approval gate</b> instead, which is the point worth making:
+        the gate is a LaunchDarkly flag, not a code setting.
+      </p>
+      <ol>
+        <li><span>Hold this round at the gate.</span><code>./round.sh --gate --fresh gated-change</code></li>
+        <li><span>Back to running straight through.</span><code>./round.sh --no-gate</code></li>
+      </ol>
+      <p class="runbook-note">
+        Use <code>--gate</code> (serves <code>always</code>), not the
+        <code>risk-threshold</code> mode: the threshold is 0.6 and these changes
+        score about 0.25, so they would sail through and the gate would look broken.
+      </p>
+      <p class="runbook-note" id="feedPath"></p>
+    </div>
+  </details>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// State. Every field is filled from a real event on the feed; nothing is
+// inferred. `plan` is explicitly the graph's PLANNED chain, so a step the run
+// skips is shown as skipped rather than silently dropped.
+// ---------------------------------------------------------------------------
+const S = {
+  plan: [],           // [{key,title,conditional,intake}]
+  nodes: new Map(),   // key -> {state, status, tags, checks, index}
+  startedAt: null,
+  finished: false,
+  flagKey: null, flagUrl: null, metrics: [], judges: [],
+  gate: null, stalled: null, awaitingInput: null,
+};
+
+const el = (id) => document.getElementById(id);
+const STATE_ICON = { pending: "○", running: "⟳", done: "✓", failed: "✕", halted: "⏸", skipped: "–" };
+const STATE_WORD = { pending: "pending", running: "running", done: "completed", failed: "failed", halted: "awaiting approval", skipped: "skipped" };
+
+// --- theme: ?theme= wins, then a saved choice, then dark (projector default) ---
+const urlTheme = new URLSearchParams(location.search).get("theme");
+const savedTheme = localStorage.getItem("af-theme");
+document.documentElement.setAttribute("data-theme", urlTheme === "light" || urlTheme === "dark" ? urlTheme : (savedTheme || "dark"));
+function syncThemeButton() {
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  el("theme").textContent = dark ? "Light" : "Dark";
+}
+el("theme").addEventListener("click", () => {
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  const next = dark ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  localStorage.setItem("af-theme", next);
+  syncThemeButton();
+});
+syncThemeButton();
+
+function fmtElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function render() {
+  // ---- tiles ----
+  const done = [...S.nodes.values()].filter((n) => n.state === "done").length;
+  el("tSteps").innerHTML = S.plan.length
+    ? `${done}<small> / ${S.plan.filter((p) => !p.intake).length}</small>`
+    : String(done || "–");
+  el("tFlags").textContent = S.flagKey ? "1" : (S.finished ? "0" : "–");
+  el("tMetrics").textContent = S.metrics.length ? String(S.metrics.length) : (S.finished ? "0" : "–");
+
+  // ---- rail ----
+  const rail = el("rail");
+  const rows = S.plan.filter((p) => !p.intake);
+  if (rail.childElementCount !== rows.length) {
+    rail.innerHTML = rows.map(() => `<div class="seg"></div>`).join("");
+  }
+  rows.forEach((p, i) => {
+    const n = S.nodes.get(p.key);
+    const seg = rail.children[i];
+    if (seg) seg.className = `seg ${n ? n.state : "pending"}`;
+  });
+
+  // ---- step cards ----
+  const steps = el("steps");
+  steps.innerHTML = rows.map((p, i) => {
+    const n = S.nodes.get(p.key) || { state: "pending", tags: {} };
+    const st = n.state;
+    // metric_keys is a long comma-joined list that gets its own rows in the
+    // created panel; repeating it here just wraps into a wall of text.
+    const tags = Object.entries(n.tags || {})
+      .filter(([k]) => k !== "metric_keys")
+      .map(([k, v]) => `<span class="tag">${esc(k)} <b>${esc(String(v))}</b></span>`).join("");
+    // The same check runs once per resource (four metrics → four identical
+    // names), so collapse duplicates to "name ×4" rather than repeat them.
+    const tally = (names) => {
+      const counts = new Map();
+      for (const n2 of names) counts.set(n2, (counts.get(n2) || 0) + 1);
+      return [...counts].map(([n2, c]) => (c > 1 ? `${n2} \u00d7${c}` : n2)).join(", ");
+    };
+    const checks = n.checks
+      ? `<div class="checks">${n.checks.ok ? "⛊" : "⛔"} deterministic ${n.checks.ok ? "checks passed" : "check FAILED"}${
+          n.checks.ok
+            ? (n.checks.passed?.length ? `: ${esc(tally(n.checks.passed))}` : "")
+            : `: ${esc((n.checks.failures || []).map((f) => `[${f.name}] ${f.detail}`).join("; "))}`
+        }</div>`
+      : "";
+    const gateNote = st === "halted" && S.gate
+      ? `<div class="note warn">Nothing was created for this step or any later one. A human approves by re-running with:<br /><code>${esc(S.gate.resumeCommand || ("--approve " + S.gate.node))}</code></div>`
+      : "";
+    const inputNote = S.awaitingInput && S.awaitingInput.node === p.key
+      ? `<div class="note warn">The agent asked a question: ${esc(S.awaitingInput.question || "(see the step output)")}</div>`
+      : "";
+    const stallNote = S.stalled && S.stalled.node === p.key
+      ? `<div class="note warn">${esc(S.stalled.detail)}</div>` : "";
+    return `
+      <div class="step ${st}" data-key="${esc(p.key)}">
+        <div class="idx">${st === "done" ? "✓" : i + 1}</div>
+        <div>
+          <div class="title">${esc(p.title || p.key)}${p.conditional ? ' <span class="key">· conditional step</span>' : ""}</div>
+          <div class="key">${esc(p.key)}</div>
+          ${tags ? `<div class="tags">${tags}</div>` : ""}
+          ${checks}${gateNote}${inputNote}${stallNote}
+        </div>
+        <div class="state ${st}"><span class="ico">${STATE_ICON[st]}</span>${STATE_WORD[st]}</div>
+      </div>`;
+  }).join("");
+
+  // ---- created resources ----
+  const created = el("created");
+  const items = [];
+  if (S.flagKey) {
+    items.push(`<div class="res"><span class="kind">flag</span>${
+      S.flagUrl ? `<a href="${esc(S.flagUrl)}" target="_blank" rel="noopener">${esc(S.flagKey)}</a>` : `<span class="name">${esc(S.flagKey)}</span>`
+    }<span class="spacer"></span></div>`);
+  }
+  for (const m of S.metrics) items.push(`<div class="res"><span class="kind">metric</span><span class="name">${esc(m)}</span></div>`);
+  created.innerHTML = items.length ? items.join("") :
+    `<div class="empty">${S.finished ? "Nothing was created for this run." : "Nothing yet. The chain creates the flag at step 3 and metrics at step 4."}</div>`;
+
+  // Judges score an agent's output against its own diff. They are an
+  // evaluation layer, not created resources and not a gate, so they get their
+  // own section rather than sitting in the created list.
+  el("judgeWrap").hidden = S.judges.length === 0;
+  el("judges").innerHTML = S.judges.map((j) =>
+    `<div class="res"><span class="kind">judge</span><span class="name">${esc(j.node)}</span>` +
+    `<span class="spacer" style="flex:1"></span><span class="name">${Number(j.score).toFixed(2)}</span></div>`).join("");
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// Elapsed ticks locally between events so the UI never looks frozen during the
+// minutes-long agent steps.
+setInterval(() => {
+  if (S.startedAt && !S.finished) el("tElapsed").textContent = fmtElapsed(Date.now() - S.startedAt);
+}, 500);
+
+function apply(ev) {
+  switch (ev.type) {
+    case "_reset":
+      Object.assign(S, { plan: [], nodes: new Map(), startedAt: null, finished: false,
+        flagKey: null, flagUrl: null, metrics: [], judges: [], gate: null, stalled: null, awaitingInput: null });
+      el("verdictWrap").hidden = true;
+      el("ctx").textContent = "waiting for a run…";
+      break;
+
+    case "_ready":
+      if (!S.startedAt) el("ctx").textContent = `feed: ${ev.feed}`;
+      // The runbook quotes the path this server is actually tailing, so the
+      // commands it shows match this instance rather than a documented default.
+      if (ev.feed) {
+        el("feedPath").textContent =
+          `This page is tailing ${ev.feed}. A round has to write to that path to appear under Live run.`;
+      }
+      break;
+
+    case "run-start": {
+      S.startedAt = Date.parse(ev.at) || Date.now();
+      S.finished = false;
+      S.plan = Array.isArray(ev.plannedChain) ? ev.plannedChain : [];
+      S.nodes = new Map();
+      el("tProvider").textContent = ev.provider || "–";
+      el("ctx").textContent =
+        `${ev.repo} @ ${ev.branch || "(detached)"} vs ${ev.base} · graph ${ev.graph}` +
+        (ev.appProject ? ` · app ${ev.appProject}` : "") + (ev.dryRun ? " · DRY RUN" : "");
+      break;
+    }
+
+    case "node-start": {
+      // A node the plan did not contain still gets a row, so a custom graph or
+      // a renamed agent is never invisible.
+      if (!S.plan.some((p) => p.key === ev.node)) {
+        S.plan.push({ key: ev.node, title: ev.title || ev.node, conditional: false, intake: false });
+      }
+      S.nodes.set(ev.node, { ...(S.nodes.get(ev.node) || {}), state: "running", tags: {}, index: ev.index });
+      break;
+    }
+
+    case "node-complete": {
+      const prev = S.nodes.get(ev.node) || {};
+      const tags = ev.tags || {};
+      S.nodes.set(ev.node, { ...prev, state: ev.status === "failed" ? "failed" : "done", status: ev.status, tags, index: ev.index });
+      // The agents announce what they created in their own routing tags, so the
+      // created panel fills in as the chain runs rather than only at the end.
+      // run-end still overwrites these with the authoritative summary values.
+      if (tags.flag_key) S.flagKey = tags.flag_key;
+      if (tags.metric_keys) {
+        S.metrics = tags.metric_keys.split(",").map((k) => k.trim()).filter(Boolean);
+      }
+      break;
+    }
+
+    case "node-verified": {
+      const prev = S.nodes.get(ev.node) || { state: "done", tags: {} };
+      S.nodes.set(ev.node, { ...prev, checks: { ok: ev.ok, passed: ev.passed, failures: ev.failures } });
+      break;
+    }
+
+    case "awaiting-approval":
+      S.gate = { node: ev.node };
+      S.nodes.set(ev.node, { ...(S.nodes.get(ev.node) || { tags: {} }), state: "halted" });
+      break;
+
+    case "awaiting-input":
+      S.awaitingInput = { node: ev.node, question: ev.question };
+      break;
+
+    case "stalled":
+      S.stalled = { node: ev.node, detail: ev.detail };
+      break;
+
+    case "run-end": {
+      S.finished = true;
+      if (ev.gatedNode) S.gate = { node: ev.gatedNode, resumeCommand: ev.resumeCommand };
+      if (ev.flagKey) { S.flagKey = ev.flagKey; S.flagUrl = ev.flagUrl; }
+      if (Array.isArray(ev.metricKeys)) S.metrics = ev.metricKeys;
+      if (Array.isArray(ev.judges)) S.judges = ev.judges;
+      // Anything planned that never started, and is not the gated step, was skipped.
+      for (const p of S.plan) {
+        if (p.intake) continue;
+        if (!S.nodes.has(p.key)) S.nodes.set(p.key, { state: "skipped", tags: {} });
+      }
+      const kind = ev.outcome === "approved" ? "approved"
+        : ev.outcome === "pending-approval" ? "halted"
+        : ev.outcome === "noop" ? "noop" : "rejected";
+      const ico = { approved: "✓", halted: "⏸", noop: "–", rejected: "✕" }[kind];
+      const word = { approved: "Approved", halted: "Paused at approval gate", noop: "No flag needed", rejected: "Not approved" }[kind];
+      el("verdictWrap").hidden = false;
+      el("verdict").innerHTML =
+        `<div class="verdict ${kind}"><span class="ico">${ico}</span><span>${word}</span>` +
+        `<span class="why">${esc(ev.verdict || ev.error || (ev.gatedNode ? `before ${ev.gatedNode}` : ""))}</span></div>`;
+      if (S.startedAt) el("tElapsed").textContent = fmtElapsed((Date.parse(ev.at) || Date.now()) - S.startedAt);
+      break;
+    }
+  }
+  render();
+}
+
+// ---------------------------------------------------------------------------
+// Data source. Two kinds, one apply(): LIVE tails the CLI's feed over SSE, and
+// each SAMPLE steps through a captured run on a timer. Samples are real runs'
+// feeds, not scripts, so sample mode draws exactly what live mode drew.
+//
+// Switching sources always resets first, so two runs can never splice into one
+// timeline. Repeat re-runs whatever source is selected: for a sample that is a
+// fresh replay from the top, and for live it reconnects and replays the feed
+// the server has, which is how you show a round again without re-running it.
+// ---------------------------------------------------------------------------
+const params = new URLSearchParams(location.search);
+let source = params.has("replay") ? (params.get("replay") || "approved") : "live";
+let es = null;          // open EventSource, when live
+let replayToken = 0;    // bumped to abandon an in-flight replay
+
+function reset() {
+  replayToken++;
+  if (es) { es.close(); es = null; }
+  apply({ type: "_reset" });
+}
+
+function setStatus(cls, text) {
+  el("conn").className = `pill ${cls}`;
+  el("connText").textContent = text;
+}
+
+function live() {
+  setStatus("", "connecting");
+  es = new EventSource("/events");
+  es.onopen = () => setStatus("live", "live");
+  es.onmessage = (m) => { try { apply(JSON.parse(m.data)); } catch { /* ignore a bad frame */ } };
+  es.onerror = () => setStatus("down", "reconnecting");
+}
+
+async function replay(id) {
+  const token = replayToken;
+  setStatus("", "sample");
+  let text;
+  try {
+    const r = await fetch(`/fixture/${encodeURIComponent(id)}`);
+    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    text = await r.text();
+  } catch (e) {
+    el("ctx").textContent = `sample unavailable: ${e.message}`;
+    return;
+  }
+  const events = text.split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l));
+  if (params.has("instant")) { for (const ev of events) apply(ev); return; }
+  const speed = Number(params.get("speed")) || 1;
+  el("repeat").disabled = true;
+  for (const ev of events) {
+    if (token !== replayToken) return;   // superseded by a newer selection
+    apply(ev);
+    await new Promise((r) => setTimeout(r, 900 / speed));
+  }
+  if (token === replayToken) el("repeat").disabled = false;
+}
+
+function start() {
+  reset();
+  el("repeat").disabled = false;
+  if (source === "live") live(); else replay(source);
+}
+
+// Build the source menu from the fixtures actually on disk, so capturing a new
+// one needs no change here.
+(async () => {
+  let fixtures = [], feeds = [];
+  try { fixtures = await (await fetch("/fixtures")).json(); } catch { /* live-only is fine */ }
+  // Per-branch feeds from other cohorts' rounds, newest first. Several people
+  // share one factory, so each branch writes its own feed and any of them can
+  // be reviewed here after the fact.
+  try { feeds = await (await fetch("/feeds")).json(); } catch { /* none yet */ }
+  el("mode").innerHTML =
+    `<option value="live">Live run (newest)</option>` +
+    feeds.map((f) => `<option value="${f.id}">${f.label}</option>`).join("") +
+    fixtures.map((f) => `<option value="${f.id}">${f.label}</option>`).join("");
+  el("mode").value = source;
+  el("mode").addEventListener("change", () => { source = el("mode").value; start(); });
+  start();
+})();
+
+el("repeat").addEventListener("click", start);
+
+// ?runbook opens the instructions on load, for a walkthrough where the commands
+// are the point rather than the run.
+if (params.has("runbook")) el("runbook").open = true;
+
+render();
+</script>
+</body>
+</html>
