@@ -103,10 +103,24 @@ if [ -n "$FRESH" ]; then
     git -C "$LAB" status --short | sed 's/^/  /'
     exit 1
   fi
-  git -C "$LAB" checkout -q "$BASE"
+  # A branch already checked out in another worktree cannot be checked out here
+  # ("already used by worktree"), which is exactly the case for the shared
+  # branch. Fall back to the remote-tracking ref, which no worktree holds.
+  if ! git -C "$LAB" checkout -q "$BASE" 2>/dev/null; then
+    if git -C "$LAB" rev-parse --verify -q "origin/$BASE" >/dev/null; then
+      echo "note: '$BASE' is checked out elsewhere; branching from origin/$BASE"
+      git -C "$LAB" fetch -q origin
+      git -C "$LAB" checkout -q --detach "origin/$BASE"
+      BASE="origin/$BASE"
+    else
+      echo "cannot check out base '$BASE' in $LAB"
+      exit 1
+    fi
+  fi
   git -C "$LAB" checkout -q -b "lab/$FRESH"
   echo "on branch lab/$FRESH, based on $BASE"
-  echo "make a change in $LAB (no flags; the pipeline adds those), commit it, then: ./round.sh"
+  echo "make a change in $LAB (no flags; the pipeline adds those), commit it, then:"
+  echo "  ./round.sh --base $BASE"
   exit 0
 fi
 
